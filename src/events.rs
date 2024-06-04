@@ -1,6 +1,3 @@
-multiversx_sc::imports!();
-multiversx_sc::derive_imports!();
-
 #[multiversx_sc::module]
 pub trait EventsModule {
     #[event("createStream")]
@@ -31,4 +28,4 @@ pub trait EventsModule {
         #[indexed] canceled_by: &ManagedAddress,
         #[indexed] claimed_amount: &BigUint,
     );
-}  
+}
