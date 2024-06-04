@@ -1,664 +1,612 @@
-use coindrip::{CoinDrip, storage::StorageModule, errors::{ERR_ZERO_DEPOSIT, ERR_STREAM_IS_NOT_CANCELLED, ERR_ONLY_RECIPIENT_SENDER_CAN_CLAIM, ERR_STREAM_TO_SC, ERR_STREAM_TO_CALLER, ERR_START_TIME, ERR_END_TIME, ERR_ONLY_RECIPIENT_CLAIM, ERR_ZERO_CLAIM, ERR_INVALID_STREAM, ERR_CANCEL_ONLY_OWNERS, ERR_CANT_CANCEL}};
-use multiversx_sc::{types::{BigUint}, codec::multi_types::OptionalValue};
-use multiversx_sc_scenario::{rust_biguint, managed_address};
+use coindrip::{
+    coindrip_proxy,
+    errors::{
+        ERR_CANCEL_ONLY_OWNERS, ERR_CANT_CANCEL, ERR_END_TIME, ERR_INVALID_STREAM,
+        ERR_ONLY_RECIPIENT_CLAIM, ERR_ONLY_RECIPIENT_SENDER_CAN_CLAIM, ERR_START_TIME,
+        ERR_STREAM_IS_NOT_CANCELLED, ERR_STREAM_TO_CALLER, ERR_STREAM_TO_SC, ERR_ZERO_CLAIM,
+        ERR_ZERO_DEPOSIT,
+    },
+};
+use contract_setup::{
+    setup, COINDRIP_ADDRESS, CURRENT_TIMESTAMP, FIRST_USER, INITIAL_OWNER_TOKEN_BALANCE,
+    OWNER_ADDRESS, SECOND_USER, TOKEN_ID,
+};
+use multiversx_sc::{
+    codec::multi_types::OptionalValue,
+    types::{BigUint, ReturnsResult},
+};
+use multiversx_sc_scenario::imports::*;
 
 mod contract_setup;
-use contract_setup::{setup_contract, TOKEN_ID};
 
 #[test]
 fn deploy_test() {
-    let mut setup = setup_contract(coindrip::contract_obj);
-
-    // simulate deploy
-    setup
-        .blockchain_wrapper
-        .execute_tx(
-            &setup.owner_address,
-            &setup.contract_wrapper,
-            &rust_biguint!(0u64),
-            |sc| {
-                sc.init();
-            },
-        )
-        .assert_ok();
-}
-
-/**
- * Utility function to get current timestamp
- */
-fn get_current_timestamp() -> u64 {
-    return 1668518731;
+    let _ = setup(); // deploy and check inside
 }
 
 #[test]
 fn create_stream_test() {
-    let mut setup = setup_contract(coindrip::contract_obj);
-    let b_wrapper = &mut setup.blockchain_wrapper;
-    let current_timestamp = get_current_timestamp();
-    b_wrapper.set_block_timestamp(current_timestamp);
-    let c_wrapper = &mut setup.contract_wrapper;
-    let first_user = setup.first_user_address;
-    let owner_address  = setup.owner_address;
-    
+    let mut world = setup();
+
+    world.current_block().block_timestamp(CURRENT_TIMESTAMP);
 
     // Create a valid stream of 3K tokens
-    b_wrapper
-        .execute_esdt_transfer(
-            &owner_address,
-            c_wrapper,
-            TOKEN_ID,
-            0, 
-            &rust_biguint!(3_000),
-            |sc| {
-                let current_timestamp = get_current_timestamp();
-                 sc.create_stream(managed_address!(&first_user), current_timestamp + 60, current_timestamp + 60 * 60, OptionalValue::None);
-
-                let user_deposit = sc.streams_list(&managed_address!(&first_user));
-                let expected_deposit = user_deposit.len();
-                assert_eq!(expected_deposit, 1);
-            },
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 60,
+            OptionalValue::<bool>::None,
         )
-        .assert_ok();
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(3_000u64))
+        .run();
+
+    let user_deposit = world
+        .query()
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .streams_list(FIRST_USER)
+        .returns(ReturnsResult)
+        .run();
+
+    assert_eq!(user_deposit.len(), 1);
 
     // Create an invalid stream of 0 tokens
-    b_wrapper
-    .execute_esdt_transfer(
-        &owner_address,
-        c_wrapper,
-        TOKEN_ID,
-        0, 
-        &rust_biguint!(0),
-        |sc| {
-            let current_timestamp = get_current_timestamp();
-             sc.create_stream(managed_address!(&first_user), current_timestamp + 60, current_timestamp + 60 * 60, OptionalValue::None);
-        },
-    )
-    .assert_user_error(ERR_ZERO_DEPOSIT);
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 60,
+            OptionalValue::<bool>::None,
+        )
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::zero())
+        .returns(ExpectError(4u64, ERR_ZERO_DEPOSIT))
+        .run();
 
     // Stream towards the SC
-    b_wrapper
-    .execute_esdt_transfer(
-        &owner_address,
-        c_wrapper,
-        TOKEN_ID,
-        0, 
-        &rust_biguint!(3_000),
-        |sc| {
-            let current_timestamp = get_current_timestamp();
-            sc.create_stream(managed_address!(c_wrapper.address_ref()), current_timestamp + 60, current_timestamp + 60 * 60, OptionalValue::None);
-        },
-    )
-    .assert_user_error(ERR_STREAM_TO_SC);
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            COINDRIP_ADDRESS,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 60,
+            OptionalValue::<bool>::None,
+        )
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(3_000u64))
+        .returns(ExpectError(4u64, ERR_STREAM_TO_SC))
+        .run();
 
     // Stream towards the caller
-    b_wrapper
-    .execute_esdt_transfer(
-        &owner_address,
-        c_wrapper,
-        TOKEN_ID,
-        0, 
-        &rust_biguint!(3_000),
-        |sc| {
-            let current_timestamp = get_current_timestamp();
-            sc.create_stream(managed_address!(&owner_address), current_timestamp + 60, current_timestamp + 60 * 60, OptionalValue::None);
-        },
-    )
-    .assert_user_error(ERR_STREAM_TO_CALLER);
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            OWNER_ADDRESS,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 60,
+            OptionalValue::<bool>::None,
+        )
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(3_000u64))
+        .returns(ExpectError(4u64, ERR_STREAM_TO_CALLER))
+        .run();
 
     // Start time before current time
-    b_wrapper
-    .execute_esdt_transfer(
-        &owner_address,
-        c_wrapper,
-        TOKEN_ID,
-        0, 
-        &rust_biguint!(3_000),
-        |sc| {
-            let current_timestamp = get_current_timestamp();
-            sc.create_stream(managed_address!(&first_user), current_timestamp - 60, current_timestamp + 60 * 60, OptionalValue::None);
-        },
-    )
-    .assert_user_error(ERR_START_TIME);
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP - 60,
+            CURRENT_TIMESTAMP + 60 * 60,
+            OptionalValue::<bool>::None,
+        )
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(3_000u64))
+        .returns(ExpectError(4u64, ERR_START_TIME))
+        .run();
 
-     // End time before start time
-     b_wrapper
-     .execute_esdt_transfer(
-         &owner_address,
-         c_wrapper,
-         TOKEN_ID,
-         0, 
-         &rust_biguint!(3_000),
-         |sc| {
-             let current_timestamp = get_current_timestamp();
-             sc.create_stream(managed_address!(&first_user), current_timestamp + 60 * 60, current_timestamp + 60, OptionalValue::None);
-         },
-     )
-     .assert_user_error(ERR_END_TIME);
+    // End time before start time
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60 * 60,
+            CURRENT_TIMESTAMP + 60,
+            OptionalValue::<bool>::None,
+        )
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(3_000u64))
+        .returns(ExpectError(4u64, ERR_END_TIME))
+        .run();
 }
 
 #[test]
 fn claim_from_stream_test() {
-    let mut setup = setup_contract(coindrip::contract_obj);
-    let b_wrapper = &mut setup.blockchain_wrapper;
-    let current_timestamp = get_current_timestamp();
-    b_wrapper.set_block_timestamp(current_timestamp);
-    let c_wrapper = &mut setup.contract_wrapper;
-    let first_user = setup.first_user_address;
-    let owner_address  = setup.owner_address;
-    
+    let mut world = setup();
+
+    world.current_block().block_timestamp(CURRENT_TIMESTAMP);
 
     // Create a valid stream of 3K tokens
-    b_wrapper
-        .execute_esdt_transfer(
-            &owner_address,
-            c_wrapper,
-            TOKEN_ID,
-            0, 
-            &rust_biguint!(3_000),
-            |sc| {
-                let current_timestamp = get_current_timestamp();
-                 sc.create_stream(managed_address!(&first_user), current_timestamp + 60, current_timestamp + 60 * 3, OptionalValue::None);
-            },
-        ).assert_ok();
-        
-
-        // Claim from stream wrong recipient
-        b_wrapper
-        .execute_tx(
-            &owner_address,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream(1);
-            },
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 3,
+            OptionalValue::<bool>::None,
         )
-        .assert_user_error(ERR_ONLY_RECIPIENT_CLAIM);
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(3_000u64))
+        .run();
 
-          // Amount to claim is zero
-          b_wrapper
-          .execute_tx(
-              &first_user,
-              c_wrapper,
-              &rust_biguint!(0), 
-              |sc| {
-                  sc.claim_from_stream(1);
-              },
-          )
-          .assert_user_error(ERR_ZERO_CLAIM);
+    // Claim from stream wrong recipient
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .returns(ExpectError(4u64, ERR_ONLY_RECIPIENT_CLAIM))
+        .run();
 
-          b_wrapper.set_block_timestamp(current_timestamp + 60 * 2);
+    // Amount to claim is zero
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .returns(ExpectError(4u64, ERR_ZERO_CLAIM))
+        .run();
 
-          // Claim 1.5K tokens
-          b_wrapper
-          .execute_tx(
-              &first_user,
-              c_wrapper,
-              &rust_biguint!(0), 
-              |sc| {
-                  sc.claim_from_stream(1);
-              },
-          )
-          .assert_ok();
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 2);
 
-          b_wrapper.check_esdt_balance(&first_user, TOKEN_ID, &rust_biguint!(1500));
+    // Claim 1.5K tokens
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .run();
 
-          b_wrapper.set_block_timestamp(current_timestamp + 60 * 5);
+    world.check_account(FIRST_USER).esdt_balance(TOKEN_ID, 1500);
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 5);
 
-          // Claim rest of the 1.5K tokens
-          b_wrapper
-          .execute_tx(
-              &first_user,
-              c_wrapper,
-              &rust_biguint!(0), 
-              |sc| {
-                  sc.claim_from_stream(1);
-              },
-          )
-          .assert_ok();
+    // Claim rest of the 1.5K tokens
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .run();
 
-          b_wrapper.check_esdt_balance(&first_user, TOKEN_ID, &rust_biguint!(3000));
+    world.check_account(FIRST_USER).esdt_balance(TOKEN_ID, 3000);
 
-        // Stream is deleted
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream(1);
-            },
-        )
-        .assert_user_error(ERR_INVALID_STREAM);
+    // Stream is deleted
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .returns(ExpectError(4u64, ERR_INVALID_STREAM))
+        .run();
 
-        // Check storage updates
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                let user_deposit = sc.streams_list(&managed_address!(&first_user));
-                let expected_deposit = user_deposit.len();
-                assert_eq!(expected_deposit, 0);
-            },
-        )
-        .assert_ok()
+    // Check storage updates
+    let user_deposit = world
+        .query()
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .streams_list(FIRST_USER)
+        .returns(ReturnsResult)
+        .run();
+
+    assert_eq!(user_deposit.len(), 0);
 }
 
 #[test]
 fn cancel_stream_test() {
-    let mut setup = setup_contract(coindrip::contract_obj);
-    let b_wrapper = &mut setup.blockchain_wrapper;
-    let current_timestamp = get_current_timestamp();
-    b_wrapper.set_block_timestamp(current_timestamp);
-    let c_wrapper = &mut setup.contract_wrapper;
-    let first_user = setup.first_user_address;
-    let second_user = setup.second_user_address;
-    let owner_address  = setup.owner_address;
-    let owner_balance = b_wrapper.get_esdt_balance(&owner_address, TOKEN_ID, 0);
+    let mut world = setup();
+
+    world.current_block().block_timestamp(CURRENT_TIMESTAMP);
 
     // Create a valid stream of 3K tokens
-    b_wrapper
-        .execute_esdt_transfer(
-            &owner_address,
-            c_wrapper,
-            TOKEN_ID,
-            0, 
-            &rust_biguint!(3_000),
-            |sc| {
-                let current_timestamp = get_current_timestamp();
-                 sc.create_stream(managed_address!(&first_user), current_timestamp + 60, current_timestamp + 60 * 3, OptionalValue::None);
-            },
-        ).assert_ok();
-
-        // Only sender and recipient can cencel stream
-        b_wrapper
-        .execute_tx(
-            &second_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.cancel_stream(1, OptionalValue::None)
-            },
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 3,
+            OptionalValue::<bool>::None,
         )
-        .assert_user_error(ERR_CANCEL_ONLY_OWNERS);
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(3_000u64))
+        .run();
 
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 2);
+    // Only sender and recipient can cancel stream
+    world
+        .tx()
+        .from(SECOND_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .cancel_stream(1u64, OptionalValue::<bool>::None)
+        .returns(ExpectError(4u64, ERR_CANCEL_ONLY_OWNERS))
+        .run();
 
-        // Cancel stream in the middle
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.cancel_stream(1, OptionalValue::None)
-            },
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 2);
+
+    // Cancel stream in the middle
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .cancel_stream(1u64, OptionalValue::<bool>::None)
+        .run();
+
+    world.check_account(FIRST_USER).esdt_balance(TOKEN_ID, 1500);
+    world
+        .check_account(OWNER_ADDRESS)
+        .esdt_balance(TOKEN_ID, INITIAL_OWNER_TOKEN_BALANCE - 3000u64);
+
+    world.current_block().block_timestamp(CURRENT_TIMESTAMP);
+
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 3,
+            OptionalValue::Some(false),
         )
-        .assert_ok();
+        .single_esdt(&TOKEN_ID.into(), 0u64, &BigUint::from(3000u64))
+        .run();
 
-        b_wrapper.check_esdt_balance(&first_user, TOKEN_ID, &rust_biguint!(1500));
-        b_wrapper.check_esdt_balance(&owner_address, TOKEN_ID, &(owner_balance - rust_biguint!(3000)));
-
-        b_wrapper.set_block_timestamp(current_timestamp);
-
-        b_wrapper
-        .execute_esdt_transfer(
-            &owner_address,
-            c_wrapper,
-            TOKEN_ID,
-            0, 
-            &rust_biguint!(3_000),
-            |sc| {
-                let current_timestamp = get_current_timestamp();
-                 sc.create_stream(managed_address!(&first_user), current_timestamp + 60, current_timestamp + 60 * 3, OptionalValue::Some(false));
-            },
-        ).assert_ok();
-
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.cancel_stream(2, OptionalValue::None)
-            },
-        )
-        .assert_user_error(ERR_CANT_CANCEL);
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .cancel_stream(2u64, OptionalValue::<bool>::None)
+        .returns(ExpectError(4u64, ERR_CANT_CANCEL))
+        .run();
 }
 
 #[test]
 fn claim_from_stream_after_cancel_test() {
-    let mut setup = setup_contract(coindrip::contract_obj);
-    let b_wrapper = &mut setup.blockchain_wrapper;
-    let current_timestamp = get_current_timestamp();
-    b_wrapper.set_block_timestamp(current_timestamp);
-    let c_wrapper = &mut setup.contract_wrapper;
-    let first_user = setup.first_user_address;
-    let second_user = setup.second_user_address;
-    let owner_address  = setup.owner_address;
-    let owner_balance = b_wrapper.get_esdt_balance(&owner_address, TOKEN_ID, 0);
+    let mut world = setup();
+
+    world.current_block().block_timestamp(CURRENT_TIMESTAMP);
 
     // Create a valid stream of 3K tokens
-    b_wrapper
-        .execute_esdt_transfer(
-            &owner_address,
-            c_wrapper,
-            TOKEN_ID,
-            0, 
-            &rust_biguint!(3_000),
-            |sc| {
-                let current_timestamp = get_current_timestamp();
-                 sc.create_stream(managed_address!(&first_user), current_timestamp + 60, current_timestamp + 60 * 3, OptionalValue::None);
-            },
-        ).assert_ok();
-
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 2);
-
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream_after_cancel(1)
-            },
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 3,
+            OptionalValue::<bool>::None,
         )
-        .assert_user_error(ERR_STREAM_IS_NOT_CANCELLED);
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(3_000u64))
+        .run();
 
-        // Cancel stream in the middle
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.cancel_stream(1, OptionalValue::Some(false))
-            },
-        )
-        .assert_ok();
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 2);
 
-        b_wrapper.check_esdt_balance(&first_user, TOKEN_ID, &rust_biguint!(0));
-        b_wrapper.check_esdt_balance(&owner_address, TOKEN_ID, &(owner_balance.clone() - rust_biguint!(3000)));
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream_after_cancel(1u64)
+        .returns(ExpectError(4u64, ERR_STREAM_IS_NOT_CANCELLED))
+        .run();
 
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 6);
+    // Cancel stream in the middle
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .cancel_stream(1u64, OptionalValue::Some(false))
+        .run();
 
-        b_wrapper
-        .execute_tx(
-            &second_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream_after_cancel(1)
-            },
-        )
-        .assert_user_error(ERR_ONLY_RECIPIENT_SENDER_CAN_CLAIM);
+    world.check_account(FIRST_USER).esdt_balance(TOKEN_ID, 0);
 
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream_after_cancel(1)
-            },
-        )
-        .assert_ok();
+    world
+        .check_account(OWNER_ADDRESS)
+        .esdt_balance(TOKEN_ID, INITIAL_OWNER_TOKEN_BALANCE - 3_000u64);
 
-        b_wrapper.check_esdt_balance(&first_user, TOKEN_ID, &rust_biguint!(1500));
-        b_wrapper.check_esdt_balance(&owner_address, TOKEN_ID, &(owner_balance.clone() - rust_biguint!(3000)));
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 6);
 
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream_after_cancel(1)
-            },
-        )
-        .assert_user_error(ERR_ZERO_CLAIM);
+    world
+        .tx()
+        .from(SECOND_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream_after_cancel(1u64)
+        .returns(ExpectError(4u64, ERR_ONLY_RECIPIENT_SENDER_CAN_CLAIM))
+        .run();
 
-        b_wrapper
-        .execute_tx(
-            &owner_address,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream_after_cancel(1)
-            },
-        )
-        .assert_ok();
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream_after_cancel(1u64)
+        .run();
 
-        b_wrapper.check_esdt_balance(&first_user, TOKEN_ID, &rust_biguint!(1500));
-        b_wrapper.check_esdt_balance(&owner_address, TOKEN_ID, &(owner_balance.clone() - rust_biguint!(1500)));
+    world.check_account(FIRST_USER).esdt_balance(TOKEN_ID, 1500);
+
+    world
+        .check_account(OWNER_ADDRESS)
+        .esdt_balance(TOKEN_ID, INITIAL_OWNER_TOKEN_BALANCE - 3_000u64);
+
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream_after_cancel(1u64)
+        .returns(ExpectError(4u64, ERR_ZERO_CLAIM))
+        .run();
+
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream_after_cancel(1u64)
+        .run();
+
+    world.check_account(FIRST_USER).esdt_balance(TOKEN_ID, 1500);
+    world
+        .check_account(OWNER_ADDRESS)
+        .esdt_balance(TOKEN_ID, INITIAL_OWNER_TOKEN_BALANCE - 1500u64);
 }
 
 #[test]
 fn streamed_so_far_test() {
-    let mut setup = setup_contract(coindrip::contract_obj);
-    let b_wrapper = &mut setup.blockchain_wrapper;
-    let current_timestamp = get_current_timestamp();
-    b_wrapper.set_block_timestamp(current_timestamp);
-    let c_wrapper = &mut setup.contract_wrapper;
-    let first_user = setup.first_user_address;
-    let owner_address  = setup.owner_address;
+    let mut world = setup();
+
+    world.current_block().block_timestamp(CURRENT_TIMESTAMP);
 
     // Create a valid stream of 3K tokens
-    b_wrapper
-        .execute_esdt_transfer(
-            &owner_address,
-            c_wrapper,
-            TOKEN_ID,
-            0, 
-            &rust_biguint!(3_000),
-            |sc| {
-                let current_timestamp = get_current_timestamp();
-                 sc.create_stream(managed_address!(&first_user), current_timestamp + 60, current_timestamp + 60 * 3, OptionalValue::None);
-            },
-        ).assert_ok();
-
-        // Streamed before start 
-        b_wrapper
-        .execute_query(
-            c_wrapper,
-            |sc| {
-                let streamed_so_far = sc.recipient_balance(1);
-                assert_eq!(streamed_so_far, BigUint::zero());
-            },
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 3,
+            OptionalValue::<bool>::None,
         )
-        .assert_ok();
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(3_000u64))
+        .run();
 
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 2);
+    // Streamed before start
+    let streamed_start = world
+        .query()
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .recipient_balance(1u64)
+        .returns(ReturnsResult)
+        .run();
+    assert_eq!(streamed_start, BigUint::zero());
 
-        // Streamed at half of the period
-        b_wrapper
-        .execute_query(
-            c_wrapper,
-            |sc| {
-                let streamed_so_far = sc.recipient_balance(1);
-                assert_eq!(streamed_so_far, BigUint::from(1500u64));
-            },
-        )
-        .assert_ok();
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 2);
 
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 6);
+    // Streamed at half of the period
+    let streamed_half = world
+        .query()
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .recipient_balance(1u64)
+        .returns(ReturnsResult)
+        .run();
+    assert_eq!(streamed_half, BigUint::from(1500u64));
 
-        // Streamed after end time
-        b_wrapper
-        .execute_query(
-            c_wrapper,
-            |sc| {
-                let streamed_so_far = sc.recipient_balance(1);
-                assert_eq!(streamed_so_far, BigUint::from(3000u64));
-            },
-        )
-        .assert_ok();
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 6);
+
+    // Streamed after end time
+    let streamed_end = world
+        .query()
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .recipient_balance(1u64)
+        .returns(ReturnsResult)
+        .run();
+    assert_eq!(streamed_end, BigUint::from(3000u64));
 }
 
 #[test]
 fn claim_from_stream_rounding_test() {
-    let mut setup = setup_contract(coindrip::contract_obj);
-    let b_wrapper = &mut setup.blockchain_wrapper;
-    let current_timestamp = get_current_timestamp();
-    b_wrapper.set_block_timestamp(current_timestamp);
-    let c_wrapper = &mut setup.contract_wrapper;
-    let first_user = setup.third_user_address;
-    let owner_address  = setup.owner_address;
-    
-    b_wrapper
-        .execute_esdt_transfer(
-            &owner_address,
-            c_wrapper,
-            TOKEN_ID,
-            0, 
-            &rust_biguint!(2),
-            |sc| {
-                let current_timestamp = get_current_timestamp();
-                 sc.create_stream(managed_address!(&first_user), current_timestamp + 60, current_timestamp + 60 * 31, OptionalValue::None);
-            },
-        ).assert_ok();
+    let mut world = setup();
 
+    world.current_block().block_timestamp(CURRENT_TIMESTAMP);
 
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 5);
-
-        // Claim 0 tokens
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream(1);
-            },
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 31,
+            OptionalValue::<bool>::None,
         )
-        .assert_user_error(ERR_ZERO_CLAIM);
+        .single_esdt(&TOKEN_ID.into(), 0, &BigUint::from(2u64))
+        .run();
 
-        b_wrapper.check_esdt_balance(&first_user, TOKEN_ID, &rust_biguint!(0));
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 5);
 
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 26);
+    // Claim 0 tokens
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .returns(ExpectError(4u64, ERR_ZERO_CLAIM))
+        .run();
 
-        // Claim 1 token
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream(1);
-            },
-        )
-        .assert_ok();
+    world.check_account(FIRST_USER).esdt_balance(TOKEN_ID, 0);
 
-        b_wrapper.check_esdt_balance(&first_user, TOKEN_ID, &rust_biguint!(1));
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 26);
 
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 31 + 60);
+    // Claim 1 token
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .run();
 
-        // Claim 1 token
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream(1);
-            },
-        )
-        .assert_ok();
+    world.check_account(FIRST_USER).esdt_balance(TOKEN_ID, 1);
 
-        b_wrapper.check_esdt_balance(&first_user, TOKEN_ID, &rust_biguint!(2));
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 31 + 60);
 
-        // Stream is deleted
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream(1);
-            },
-        )
-        .assert_user_error(ERR_INVALID_STREAM);
+    // Claim 1 token
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .run();
 
-        // Check storage updates
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                let user_deposit = sc.streams_list(&managed_address!(&first_user));
-                let expected_deposit = user_deposit.len();
-                assert_eq!(expected_deposit, 0);
-            },
-        )
-        .assert_ok()
+    world.check_account(FIRST_USER).esdt_balance(TOKEN_ID, 2);
+
+    // Stream is deleted
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .returns(ExpectError(4u64, ERR_INVALID_STREAM))
+        .run();
+
+    // Check storage updates
+    let user_deposit = world
+        .query()
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .streams_list(FIRST_USER)
+        .returns(ReturnsResult)
+        .run();
+    assert_eq!(user_deposit.len(), 0);
 }
 
 #[test]
 fn claim_from_stream_egld_test() {
-    let mut setup = setup_contract(coindrip::contract_obj);
-    let b_wrapper = &mut setup.blockchain_wrapper;
-    let current_timestamp = get_current_timestamp();
-    b_wrapper.set_block_timestamp(current_timestamp);
-    let c_wrapper = &mut setup.contract_wrapper;
-    let first_user = setup.first_user_address;
-    let owner_address  = setup.owner_address;
-    
+    let mut world = setup();
+
+    world.current_block().block_timestamp(CURRENT_TIMESTAMP);
 
     // Create a valid stream of 3K tokens
-    b_wrapper
-        .execute_tx(
-            &owner_address,
-            c_wrapper,
-            &rust_biguint!(100),
-            |sc| {
-                let current_timestamp = get_current_timestamp();
-                 sc.create_stream(managed_address!(&first_user), current_timestamp + 60, current_timestamp + 60 * 3, OptionalValue::None);
-            },
-        ).assert_ok();
-
-        // Amount to claim is zero
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream(1);
-            },
+    world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .create_stream(
+            FIRST_USER,
+            CURRENT_TIMESTAMP + 60,
+            CURRENT_TIMESTAMP + 60 * 3,
+            OptionalValue::<bool>::None,
         )
-        .assert_user_error(ERR_ZERO_CLAIM);
+        .egld(100)
+        .run();
 
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 2);
+    // Amount to claim is zero
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .returns(ExpectError(4u64, ERR_ZERO_CLAIM))
+        .run();
 
-        // Claim 50 EGLD
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream(1);
-            },
-        )
-        .assert_ok();
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 2);
 
-        b_wrapper.check_egld_balance(&first_user, &rust_biguint!(50));
+    // Claim 50 EGLD
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .run();
 
-        b_wrapper.set_block_timestamp(current_timestamp + 60 * 5);
+    world.check_account(FIRST_USER).balance(50);
 
-        // Claim rest of the 50 EGLD
-        b_wrapper
-        .execute_tx(
-            &first_user,
-            c_wrapper,
-            &rust_biguint!(0), 
-            |sc| {
-                sc.claim_from_stream(1);
-            },
-        )
-        .assert_ok();
+    world
+        .current_block()
+        .block_timestamp(CURRENT_TIMESTAMP + 60 * 5);
 
-        b_wrapper.check_egld_balance(&first_user, &rust_biguint!(100));
+    // Claim rest of the 50 EGLD
+    world
+        .tx()
+        .from(FIRST_USER)
+        .to(COINDRIP_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .claim_from_stream(1u64)
+        .run();
+
+    world.check_account(FIRST_USER).balance(100);
 }

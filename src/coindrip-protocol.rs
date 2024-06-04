@@ -1,37 +1,23 @@
 #![no_std]
 
-multiversx_sc::imports!();
-multiversx_sc::derive_imports!();
+use multiversx_sc::imports::*;
 
-pub mod storage;
-mod events;
 pub mod errors;
-use storage::{Stream, BalancesAfterCancel};
+mod events;
+pub mod storage;
+use storage::{BalancesAfterCancel, Stream};
+pub mod coindrip_proxy;
 
 use errors::{
-    ERR_STREAM_TO_SC,
-    ERR_STREAM_TO_CALLER,
-    ERR_ZERO_DEPOSIT,
-    ERR_START_TIME,
-    ERR_END_TIME,
-    ERR_ONLY_RECIPIENT_CLAIM,
-    ERR_ZERO_CLAIM,
-    ERR_CANT_CANCEL,
-    ERR_CANCEL_ONLY_OWNERS,
-    ERR_INVALID_STREAM,
-    ERR_STREAM_IS_CANCELLED,
-    ERR_STREAM_IS_NOT_CANCELLED,
-    ERR_ONLY_RECIPIENT_SENDER_CAN_CLAIM
+    ERR_CANCEL_ONLY_OWNERS, ERR_CANT_CANCEL, ERR_END_TIME, ERR_INVALID_STREAM,
+    ERR_ONLY_RECIPIENT_CLAIM, ERR_ONLY_RECIPIENT_SENDER_CAN_CLAIM, ERR_START_TIME,
+    ERR_STREAM_IS_CANCELLED, ERR_STREAM_IS_NOT_CANCELLED, ERR_STREAM_TO_CALLER, ERR_STREAM_TO_SC,
+    ERR_ZERO_CLAIM, ERR_ZERO_DEPOSIT,
 };
 #[multiversx_sc::contract]
-pub trait CoinDrip:
-    storage::StorageModule
-    + events::EventsModule {
+pub trait CoinDrip: storage::StorageModule + events::EventsModule {
     #[init]
-    fn init(
-        &self
-    ) {
-    }
+    fn init(&self) {}
 
     #[payable("*")]
     #[endpoint(createStream)]
@@ -40,13 +26,17 @@ pub trait CoinDrip:
         recipient: ManagedAddress,
         start_time: u64,
         end_time: u64,
-        _can_cancel: OptionalValue<bool>
+        _can_cancel: OptionalValue<bool>,
     ) {
         let caller = self.blockchain().get_caller();
-        require!(recipient != self.blockchain().get_sc_address(), ERR_STREAM_TO_SC);
-        require!(recipient != caller , ERR_STREAM_TO_CALLER);
+        require!(
+            recipient != self.blockchain().get_sc_address(),
+            ERR_STREAM_TO_SC
+        );
+        require!(recipient != caller, ERR_STREAM_TO_CALLER);
 
-        let (token_identifier, token_nonce, token_amount) = self.call_value().egld_or_single_esdt().into_tuple();
+        let (token_identifier, token_nonce, token_amount) =
+            self.call_value().egld_or_single_esdt().into_tuple();
 
         require!(token_amount > 0, ERR_ZERO_DEPOSIT);
 
@@ -55,15 +45,24 @@ pub trait CoinDrip:
         require!(end_time > start_time, ERR_END_TIME);
 
         let stream_id = self.last_stream_id().get() + 1;
-        self.last_stream_id().set(&stream_id);
+        self.last_stream_id().set(stream_id);
 
-        let can_cancel: bool = (&_can_cancel.into_option()).unwrap_or(true);
+        let can_cancel: bool = (_can_cancel.into_option()).unwrap_or(true);
 
         self.streams_list(&caller).insert(stream_id);
         self.streams_list(&recipient).insert(stream_id);
 
-        self.create_stream_event(stream_id, &caller, &recipient, &token_identifier, token_nonce, &token_amount, start_time, end_time);
-        
+        self.create_stream_event(
+            stream_id,
+            &caller,
+            &recipient,
+            &token_identifier,
+            token_nonce,
+            &token_amount,
+            start_time,
+            end_time,
+        );
+
         let stream = Stream {
             sender: caller,
             recipient,
@@ -74,7 +73,7 @@ pub trait CoinDrip:
             can_cancel,
             start_time,
             end_time,
-            balances_after_cancel: None
+            balances_after_cancel: None,
         };
         self.stream_by_id(stream_id).set(&stream);
     }
@@ -97,10 +96,10 @@ pub trait CoinDrip:
             return BigUint::zero();
         }
 
-        let streamed_so_far = &stream.deposit * (current_time - stream.start_time) / (stream.end_time - stream.start_time);
-        let recipient_balance = streamed_so_far.min(stream.deposit) - (stream.claimed_amount);
+        let streamed_so_far = &stream.deposit * (current_time - stream.start_time)
+            / (stream.end_time - stream.start_time);
 
-        recipient_balance
+        streamed_so_far.min(stream.deposit) - (stream.claimed_amount)
     }
 
     /// Calculates the sender balance based on the recipient balance and the claimed balance
@@ -127,13 +126,13 @@ pub trait CoinDrip:
 
     /// This endpoint can be used by the recipient of the stream to claim the stream amount of tokens
     #[endpoint(claimFromStream)]
-    fn claim_from_stream(
-        &self,
-        stream_id: u64
-    ) {
+    fn claim_from_stream(&self, stream_id: u64) {
         let mut stream = self.get_stream(stream_id);
 
-        require!(stream.balances_after_cancel.is_none(), ERR_STREAM_IS_CANCELLED);
+        require!(
+            stream.balances_after_cancel.is_none(),
+            ERR_STREAM_IS_CANCELLED
+        );
 
         let caller = self.blockchain().get_caller();
         require!(caller == stream.recipient, ERR_ONLY_RECIPIENT_CLAIM);
@@ -151,7 +150,12 @@ pub trait CoinDrip:
             self.stream_by_id(stream_id).set(&stream);
         }
 
-        self.send().direct(&caller, &stream.payment_token, stream.payment_nonce, &amount);
+        self.send().direct(
+            &caller,
+            &stream.payment_token,
+            stream.payment_nonce,
+            &amount,
+        );
 
         self.claim_from_stream_event(stream_id, &amount, is_finalized);
     }
@@ -159,19 +163,21 @@ pub trait CoinDrip:
     /// This endpoint can be used the by sender or recipient of a stream to cancel the stream.
     /// !!! The stream needs to be cancelable (a property that is set when the stream is created by the sender)
     #[endpoint(cancelStream)]
-    fn cancel_stream(
-        &self,
-        stream_id: u64,
-        _with_claim: OptionalValue<bool>
-    ) {
+    fn cancel_stream(&self, stream_id: u64, _with_claim: OptionalValue<bool>) {
         let mut stream = self.get_stream(stream_id);
 
-        require!(stream.balances_after_cancel.is_none(), ERR_STREAM_IS_CANCELLED);
+        require!(
+            stream.balances_after_cancel.is_none(),
+            ERR_STREAM_IS_CANCELLED
+        );
 
         require!(stream.can_cancel, ERR_CANT_CANCEL);
 
         let caller = self.blockchain().get_caller();
-        require!(caller == stream.recipient || caller == stream.sender, ERR_CANCEL_ONLY_OWNERS);
+        require!(
+            caller == stream.recipient || caller == stream.sender,
+            ERR_CANCEL_ONLY_OWNERS
+        );
 
         let sender_balance = self.sender_balance(stream_id);
         let recipient_balance = self.recipient_balance(stream_id);
@@ -180,12 +186,12 @@ pub trait CoinDrip:
 
         stream.balances_after_cancel = Some(BalancesAfterCancel {
             sender_balance,
-            recipient_balance
+            recipient_balance,
         });
 
         self.stream_by_id(stream_id).set(stream);
 
-        let with_claim: bool = (&_with_claim.into_option()).unwrap_or(true);
+        let with_claim: bool = (_with_claim.into_option()).unwrap_or(true);
         if with_claim {
             self.claim_from_stream_after_cancel(stream_id);
         }
@@ -197,33 +203,57 @@ pub trait CoinDrip:
     /// This endpoint is especially helpful when the recipient/sender is a non-payable smart contract
     /// For convenience, this endpoint is automatically called by default from the cancel_stream endpoint (is not instructed otherwise by the "_with_claim" param)
     #[endpoint(claimFromStreamAfterCancel)]
-    fn claim_from_stream_after_cancel(
-        &self,
-        stream_id: u64
-    ) {
+    fn claim_from_stream_after_cancel(&self, stream_id: u64) {
         let mut stream = self.get_stream(stream_id);
 
-        require!(stream.balances_after_cancel.is_some(), ERR_STREAM_IS_NOT_CANCELLED);
+        require!(
+            stream.balances_after_cancel.is_some(),
+            ERR_STREAM_IS_NOT_CANCELLED
+        );
 
         let caller = self.blockchain().get_caller();
-        require!(caller == stream.recipient || caller == stream.sender, ERR_ONLY_RECIPIENT_SENDER_CAN_CLAIM);
+        require!(
+            caller == stream.recipient || caller == stream.sender,
+            ERR_ONLY_RECIPIENT_SENDER_CAN_CLAIM
+        );
 
         let mut balances_after_cancel = stream.balances_after_cancel.unwrap();
-        
+
         if caller == stream.recipient {
             require!(balances_after_cancel.recipient_balance > 0, ERR_ZERO_CLAIM);
-            self.send().direct(&stream.recipient, &stream.payment_token, stream.payment_nonce, &balances_after_cancel.recipient_balance);
-            self.claim_from_stream_event(stream_id, &balances_after_cancel.recipient_balance, false);
+            self.tx()
+                .to(&stream.recipient)
+                .egld_or_single_esdt(
+                    &stream.payment_token,
+                    stream.payment_nonce,
+                    &balances_after_cancel.recipient_balance,
+                )
+                .transfer();
+
+            self.claim_from_stream_event(
+                stream_id,
+                &balances_after_cancel.recipient_balance,
+                false,
+            );
             balances_after_cancel.recipient_balance = BigUint::zero();
         }
 
-        if caller == stream.sender{
+        if caller == stream.sender {
             require!(balances_after_cancel.sender_balance > 0, ERR_ZERO_CLAIM);
-            self.send().direct(&stream.sender, &stream.payment_token, stream.payment_nonce, &balances_after_cancel.sender_balance);
+            self.tx()
+                .to(&stream.sender)
+                .egld_or_single_esdt(
+                    &stream.payment_token,
+                    stream.payment_nonce,
+                    &balances_after_cancel.sender_balance,
+                )
+                .transfer();
+
             balances_after_cancel.sender_balance = BigUint::zero();
         }
 
-        if balances_after_cancel.recipient_balance == 0 && balances_after_cancel.sender_balance == 0 {
+        if balances_after_cancel.recipient_balance == 0 && balances_after_cancel.sender_balance == 0
+        {
             self.remove_stream(stream_id);
         } else {
             stream.balances_after_cancel = Some(balances_after_cancel);

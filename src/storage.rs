@@ -1,13 +1,15 @@
-multiversx_sc::imports!();
-multiversx_sc::derive_imports!();
+use multiversx_sc::derive_imports::*;
+use multiversx_sc::imports::*;
 
-#[derive(TopEncode, TopDecode, NestedEncode, NestedDecode, TypeAbi)]
+#[type_abi]
+#[derive(TopEncode, TopDecode, NestedEncode, NestedDecode)]
 pub struct BalancesAfterCancel<M: ManagedTypeApi> {
     pub sender_balance: BigUint<M>,
-    pub recipient_balance: BigUint<M>
+    pub recipient_balance: BigUint<M>,
 }
 
-#[derive(TopEncode, TopDecode, TypeAbi)]
+#[type_abi]
+#[derive(TopEncode, TopDecode)]
 pub struct Stream<M: ManagedTypeApi> {
     pub sender: ManagedAddress<M>,
     pub recipient: ManagedAddress<M>,
@@ -18,7 +20,7 @@ pub struct Stream<M: ManagedTypeApi> {
     pub can_cancel: bool,
     pub start_time: u64,
     pub end_time: u64,
-    pub balances_after_cancel: Option<BalancesAfterCancel<M>>
+    pub balances_after_cancel: Option<BalancesAfterCancel<M>>,
 }
 
 #[multiversx_sc::module]

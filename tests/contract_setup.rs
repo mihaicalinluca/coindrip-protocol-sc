@@ -1,62 +1,45 @@
-use multiversx_sc::types::{Address};
-use multiversx_sc_scenario::{rust_biguint, testing_framework::*, DebugApi};
-use coindrip::*;
+use coindrip::coindrip_proxy;
+use multiversx_sc_scenario::imports::*;
 
-const WASM_PATH: &'static str = "output/coindrip.wasm";
-pub const TOKEN_ID: &[u8] = b"STRM-df6f26";
+pub const TOKEN_ID: TestTokenIdentifier = TestTokenIdentifier::new("STRM-df6f26");
+pub const CODE_PATH: MxscPath = MxscPath::new("output/coindrip.mxsc.json");
+pub const OWNER_ADDRESS: TestAddress = TestAddress::new("owner");
+pub const FIRST_USER: TestAddress = TestAddress::new("first-user");
+pub const SECOND_USER: TestAddress = TestAddress::new("second-user");
+pub const THIRD_USER: TestAddress = TestAddress::new("third-user");
+pub const COINDRIP_ADDRESS: TestSCAddress = TestSCAddress::new("coindrip");
+pub const INITIAL_OWNER_TOKEN_BALANCE: u64 = 5_000_000u64;
+pub const CURRENT_TIMESTAMP: u64 = 1668518731u64;
 
-pub struct ContractSetup<ContractObjBuilder>
-where
-    ContractObjBuilder: 'static + Copy + Fn() -> coindrip::ContractObj<DebugApi>,
-{
-    pub blockchain_wrapper: BlockchainStateWrapper,
-    pub owner_address: Address,
-    pub contract_wrapper: ContractObjWrapper<coindrip::ContractObj<DebugApi>, ContractObjBuilder>,
-    pub first_user_address: Address,
-    pub second_user_address: Address,
-    pub third_user_address: Address,
+pub fn setup() -> ScenarioWorld {
+    let mut world = world();
+
+    world
+        .account(OWNER_ADDRESS)
+        .balance(101)
+        .esdt_balance(TOKEN_ID, INITIAL_OWNER_TOKEN_BALANCE);
+    world.account(FIRST_USER);
+    world.account(SECOND_USER);
+    world.account(THIRD_USER);
+
+    let new_address = world
+        .tx()
+        .from(OWNER_ADDRESS)
+        .typed(coindrip_proxy::CoinDripProxy)
+        .init()
+        .code(CODE_PATH)
+        .new_address(COINDRIP_ADDRESS)
+        .returns(ReturnsNewAddress)
+        .run();
+
+    assert_eq!(new_address, COINDRIP_ADDRESS.to_address());
+
+    world
 }
 
-pub fn setup_contract<ContractObjBuilder>(
-    cf_builder: ContractObjBuilder,
-) -> ContractSetup<ContractObjBuilder>
-where
-    ContractObjBuilder: 'static + Copy + Fn() -> coindrip::ContractObj<DebugApi>,
-{
-    let rust_zero = rust_biguint!(0u64);
-    let mut blockchain_wrapper = BlockchainStateWrapper::new();
+pub fn world() -> ScenarioWorld {
+    let mut blockchain = ScenarioWorld::new();
 
-    // Create a wallet for SC and assign 5M tokens
-    let owner_address = blockchain_wrapper.create_user_account(&rust_zero);
-    blockchain_wrapper.set_esdt_balance(&owner_address, TOKEN_ID, &rust_biguint!(5_000_000));
-    blockchain_wrapper.set_egld_balance(&owner_address, &rust_biguint!(101));
-
-    // Create 3 dummy wallets to interact with the protocol
-    let first_user_address = blockchain_wrapper.create_user_account(&rust_zero);
-    let second_user_address = blockchain_wrapper.create_user_account(&rust_zero);
-    let third_user_address = blockchain_wrapper.create_user_account(&rust_zero);
-    
-    let cf_wrapper = blockchain_wrapper.create_sc_account(
-        &rust_zero,
-        Some(&owner_address),
-        cf_builder,
-        WASM_PATH,
-    );
-
-    blockchain_wrapper
-        .execute_tx(&owner_address, &cf_wrapper, &rust_zero, |sc| {
-            sc.init();
-        })
-        .assert_ok();
-
-    blockchain_wrapper.add_mandos_set_account(cf_wrapper.address_ref());
-
-    ContractSetup {
-        blockchain_wrapper,
-        owner_address,
-        contract_wrapper: cf_wrapper,
-        first_user_address,
-        second_user_address,
-        third_user_address,
-    }
+    blockchain.register_contract(CODE_PATH, coindrip::ContractBuilder);
+    blockchain
 }
